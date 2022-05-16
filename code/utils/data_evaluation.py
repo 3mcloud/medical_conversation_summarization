@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Thu Apr 29 14:47:01 2021
-
-@author: aah2azz
-
-evaluation script for summarization task
-"""
 import jsonlines
 import numpy as np
 import os

@@ -1,12 +1,4 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Created on Wed Oct 28 11:52:46 2020
-
-@author: aah2azz
-
-generate script for various ways of generating Oak dataset for summarization
-"""
 import argparse
 import glob
 import json
