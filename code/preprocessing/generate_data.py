@@ -12,8 +12,9 @@ from pandarallel import pandarallel
 from tqdm import tqdm
 
 
-#%% utilities
+#%% helper functions
 def agg_stagex(grp, sep=' '):
+    # helper function for aggregating partial summaries generated in stage 1 for use in stage 2
     finalstr = []
     for sent in grp.values:
         if any([sent in x for x in finalstr]):
@@ -23,14 +24,17 @@ def agg_stagex(grp, sep=' '):
 
 
 def bart_preprocessing(x):
+    # replacing special line-break characters in text by whitespace
     return x.replace('\n', ' ').replace('\t', ' ')
 
 
 def format_line(turn):
+    # formatting transcript text for a single utterance
     return "[{}]: {}".format(turn["speaker_id"].upper(), re.sub(r'[\s]+', ' ', turn["utterance"]))
 
 
 def get_conv(utters, no_role=False, rolemap=None):
+    # given a dictionary of utterances (dictionary with keys: "speaker_id", "utterance"), return a single text string for the transcript
     script = []
     for turn in utters:
         if rolemap is not None:
@@ -47,6 +51,7 @@ def get_conv(utters, no_role=False, rolemap=None):
 
 
 def get_mode(filename):
+    # infer dataset mode train|dev|test from input file name
     if 'dev' in filename:
         mode = 'dev'
     elif 'test' in filename:
@@ -65,52 +70,6 @@ def get_sliding_snippets(utterances, win=8, stride=4):
         return [' '.join(turns),]
     snips = [' '.join(turns[i:i+win]) for i in range(0, len(turns)-win, stride)]
     return snips
-
-
-def read_data(filename, cid='cid', stringify=True):
-    """
-    create a DataFrame from .jsonl|.json|.pckl file
-
-    Inputs:
-        filename (str) - file name
-        stringify (bool, default = True) - whether to convert "physican" column to string
-    """
-    if filename.endswith('.jsonl'):
-        df = []
-        with jsonlines.open(filename, mode='r') as reader:
-            for j in reader:
-                df.append(j)
-        df = pd.DataFrame(df)
-    elif filename.endswith('.json'):
-        df = pd.read_json(filename)
-    elif filename.endswith('.pckl'):
-        df = pd.read_pickle(filename)
-    else:
-        raise TypeError('Unrecognized file extension, supported are .jsonl|.json|.pckl')
-
-    if stringify:
-        df[cid] = df[cid].astype(str)
-    df.sort_values(cid, inplace=True)
-    return df
-
-
-def save_file(df, folder, savefile, meta_cols=['cid', 'sid'], src_col=None, tgt_col=None):
-    # save file utility
-    if os.path.exists(folder):
-        print(f"Warning! {folder}/ already exists, files with identical names will be overwritten")
-    else:
-        os.makedirs(folder)
-    savefile = os.path.join(folder, savefile)
-    df[meta_cols].to_csv(savefile+'.meta', sep='\t', index=True, header=True)
-    print('saving meta file to {}'.format(savefile+'.meta'))
-    if src_col is not None:
-        with open(savefile+'.source', 'w') as writer:
-            writer.write('\n'.join(df[src_col]))
-        print('saving source file to {}'.format(savefile+'.source'))
-    if tgt_col is not None:
-        with open(savefile+'.target', 'w') as writer:
-            writer.write('\n'.join(df[tgt_col]))
-        print('saving target file to {}'.format(savefile+'.target'))
 
 
 #%% helper functions for chunking method
@@ -214,7 +173,76 @@ utterance_separator_str=' ', header_fragment_separator_str='...', continuation_s
 
 
 #%% main APIs
+def read_data(filename, cid='cid', stringify=True):
+    """Create a DataFrame from .jsonl|.json|.pckl file.
+
+    Required Parameters
+    -------------------
+    filename: str, path to input data file
+
+    Keyword Parameters
+    ------------------
+    cid: str (default 'cid'), name of the column used for conversation identifier
+    stringify: bool (default True), whether to force the <cid> column to be strings
+
+    Return
+    ------
+    df: pandas.DataFrame object, data loaded in as a pandas dataframe
+    """
+    if filename.endswith('.jsonl'):
+        df = []
+        with jsonlines.open(filename, mode='r') as reader:
+            for j in reader:
+                df.append(j)
+        df = pd.DataFrame(df)
+    elif filename.endswith('.json'):
+        df = pd.read_json(filename)
+    elif filename.endswith('.pckl'):
+        df = pd.read_pickle(filename)
+    else:
+        raise TypeError('Unrecognized file extension, supported are .jsonl|.json|.pckl')
+
+    if stringify:
+        df[cid] = df[cid].astype(str)
+    df.sort_values(cid, inplace=True)
+    return df
+
+
+def save_file(df, folder, savefile, meta_cols=['cid', 'sid'], src_col=None, tgt_col=None):
+    """Saving dataframe object to .meta|.source|.target files.
+
+    Required Parameters
+    -------------------
+    filename: str, path to input data file
+
+    Keyword Parameters
+    ------------------
+    cid: str (default 'cid'), name of the column used for conversation identifier
+    stringify: bool (default True), whether to force the <cid> column to be strings
+
+    Return
+    ------
+    df: pandas.DataFrame object, data loaded in as a pandas dataframe
+    """
+    if os.path.exists(folder):
+        print(f"Warning! {folder}/ already exists, files with identical names will be overwritten")
+    else:
+        os.makedirs(folder)
+    savefile = os.path.join(folder, savefile)
+    df[meta_cols].to_csv(savefile+'.meta', sep='\t', index=True, header=True)
+    print('saving meta file to {}'.format(savefile+'.meta'))
+    if src_col is not None:
+        with open(savefile+'.source', 'w') as writer:
+            writer.write('\n'.join(df[src_col]))
+        print('saving source file to {}'.format(savefile+'.source'))
+    if tgt_col is not None:
+        with open(savefile+'.target', 'w') as writer:
+            writer.write('\n'.join(df[tgt_col]))
+        print('saving target file to {}'.format(savefile+'.target'))
+
+
 def aggregate_between_stages(mode, expname, suffix='stagex', savefolder='../../experiments', sep=' ', grp_keys=['cid', 'sid']):
+    """Aggregating data files created from stage 1 for stage 2 training."""
     savefolder = os.path.join(savefolder, expname)
     metafile = f'{mode}_{suffix}.meta'
     hypofile = f'{mode}_{suffix}.hypo'
@@ -238,8 +266,26 @@ def generate_chunk_data_stage1(filename, exp='', savefolder='../experiments/',
                                save=True, process_fn=None,
                                header_len=128, body_len=384, body_overlap=0.333,
                                **kwds):
-    """
-    generate data from chunking methods for multistage training - stage 1
+    """Generate necessary data files for Multistage training (Chunking method) - stage 1.
+
+    Required Parameters
+    -------------------
+    filename: str, path to input data file
+
+    Keyword Parameters
+    ------------------
+    exp: str (default ''), name of the experiment, used to create a separate folder under <savefolder> for storing all files related to current experiment.
+    savefolder: str (default '../experiments/'), path to folder storing all experiments.
+    save: bool (default True), whether to save the .meta|.source|.target files.
+    process_fn: function handle (default None), additional data preprocessing functions. The function must take in and return both a pandas.DataFrame object.
+    header_len: int (default 128), header component length in unit of words.
+    body_len: int (default 384), body component length in unit of words.
+    body_overlap: float (default 0.333), a floating value between 0 and 1, the percentage of overlap in unit of words between the body components of two adjacent chunks.
+    **kwds: additional keyword parameters supported by process_fn().
+
+    Return
+    ------
+    dfout: pandas.DataFrame object, dataframe object containing data after preprocessing for stage 1 chunking method.
     """
     df = read_data(filename)
     
@@ -282,6 +328,25 @@ def generate_chunk_data_stage1(filename, exp='', savefolder='../experiments/',
 
 
 def generate_data_vanilla(filename, exp='', meta_cols=['cid', 'sid'], save=True, savefolder='../experiments/', process_fn=None, **kwds):  
+    """Generate necessary data files for single stage Bart training.
+
+    Required Parameters
+    -------------------
+    filename: str, path to input data file
+
+    Keyword Parameters
+    ------------------
+    exp: str (default ''), name of the experiment, used to create a separate folder under <savefolder> for storing all files related to current experiment.
+    meta_cols: list[str] (default ['cid', 'sid']), list of columns to be saved in .meta files; those columns are considered identifiers.
+    savefolder: str (default '../experiments/'), path to folder storing all experiments.
+    save: bool (default True), whether to save the .meta|.source|.target files.
+    process_fn: function handle (default None), additional data preprocessing functions. The function must take in and return both a pandas.DataFrame object.
+    **kwds: additional keyword parameters supported by process_fn().
+
+    Return
+    ------
+    df: pandas.DataFrame object, dataframe object containing data after preprocessing.
+    """
     df = read_data(filename)
     if process_fn is not None:
         df = process_fn(df, **kwds)
@@ -308,6 +373,27 @@ def generate_data_vanilla(filename, exp='', meta_cols=['cid', 'sid'], save=True,
 
 
 def generate_data_multistage_stage1(file, exp, savefolder='../experiments', save=True, win=8, stride=4, meta_cols=['cid', 'sid'], process_fn=None, **kwds):
+    """Generate necessary data files for Multistage training (Sentbert) - stage 1.
+
+    Required Parameters
+    -------------------
+    filename: str, path to input data file
+
+    Keyword Parameters
+    ------------------
+    exp: str (default ''), name of the experiment, used to create a separate folder under <savefolder> for storing all files related to current experiment.
+    meta_cols: list[str] (default ['cid', 'sid']), list of columns to be saved in .meta files; those columns are considered identifiers.
+    savefolder: str (default '../experiments/'), path to folder storing all experiments.
+    save: bool (default True), whether to save the .meta|.source|.target files.
+    win: int (default 8), number of utterances in each snippet.
+    stride: int (default 4), size of stride when doing sliding scan of snippets.
+    process_fn: function handle (default None), additional data preprocessing functions. The function must take in and return both a pandas.DataFrame object.
+    **kwds: additional keyword parameters supported by process_fn().
+
+    Return
+    ------
+    df: pandas.DataFrame object, dataframe object containing data after preprocessing.
+    """
     df = read_data(file)
     if process_fn is not None:
         df = process_fn(df, **kwds)

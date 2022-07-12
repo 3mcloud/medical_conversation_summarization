@@ -4,6 +4,8 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
+#
+# All APIs in this function are direct copies of the same file in fairseq library.
 
 import argparse
 import contextlib

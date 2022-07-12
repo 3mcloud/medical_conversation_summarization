@@ -16,7 +16,9 @@ from tqdm import tqdm as tqdm
 from rouge_score import rouge_scorer
 
 
+#%% Helper Functions
 def apply_rouge_scores_calculation(value, scorer):
+    # helper functions for calculating rouge scores
     refs = value['ref']
     hypos = [value['hypo']]*len(refs)
     scores = defaultdict(lambda: defaultdict(list))
@@ -30,11 +32,13 @@ def apply_rouge_scores_calculation(value, scorer):
 
 
 def calculate_rouge_scores(df, rougescorer):
+    # helper function for applying rouge score calculation to dataframe object
     df['scores'] = df.apply(apply_rouge_scores_calculation, scorer=rougescorer, axis=1)
     return (sum(df['scores'])/df.shape[0]).to_dict()
 
 
 def calculate_rouge_simple(hypos, refs, scorer):
+    # helper functions for calculating rouge scores
     scores = defaultdict(lambda: defaultdict(list))
     for (h, r) in zip(hypos, refs):
         s = scorer.score(r, h)
@@ -44,16 +48,81 @@ def calculate_rouge_simple(hypos, refs, scorer):
             scores[key]['f'].append(s[key].fmeasure)
     return pd.DataFrame(scores).applymap(np.mean).to_dict()
     
+
+def inference_cached(bart, source_file, batch_size=24, max_len=512, nbeam=4):
+    # helper function: inference with single model checkpoint with caching feature
+    bart.eval()
+    cache = {}
+    with open(source_file) as source:
+        lines = source.read().strip().split('\n')
+        pbar = tqdm(total=len(lines))  # manually control progress bar for while loop usage
+        i = 0
+        slines = []
+        while i < len(lines):
+            if lines[i] not in cache and lines[i] not in slines:
+                slines.append(lines[i])
+                if len(slines) >= batch_size:
+                    with torch.no_grad():
+                        hypotheses_batch = bart.sample(slines, beam=nbeam, lenpen=2.0, max_len_b=max_len, min_len=5, no_repeat_ngram_size=3)
+                        for (src, hypo) in zip(slines, hypotheses_batch):
+                            cache[src] = hypo
+                        pbar.update(i)
+                    slines.clear()
+            i += 1
+        if len(slines) > 0:
+            # possible remaining sentences that don't fill up a batch
+            with torch.no_grad():
+                hypotheses_batch = bart.sample(slines, beam=nbeam, lenpen=2.0, max_len_b=max_len, min_len=5, no_repeat_ngram_size=3)
+                for (src, hypo) in zip(slines, hypotheses_batch):
+                    cache[src] = hypo
+                pbar.update(i)
+        pbar.close()
+    hypotheses = [cache[x] for x in lines] 
+    return hypotheses
+            
     
+def validate_checkpoint_filename(s):
+    # helper function for checking filename validity of model checkpoints
+    status = True
+    status = status and s.endswith('.pt')
+    status = status and s.startswith('checkpoint')
+    status = status and s.replace('checkpoint', '').replace('.pt', '').replace('_', '').isdigit()
+    return status
+
+
+#%% Main API
 def batch_inference(dataset, bin_path, datafolder,
                     cid='cid',
                     suffix='', 
-                    refsuffix='_all', 
+                    refsuffix='', 
                     ckptfolder='checkpoints/', 
                     ckpt_file=None, 
                     calculate_rouge=True, 
                     calculation_type='old',
                     **kwargs):
+    """Run batch model inference on a dataset.
+    
+    Required Parameters
+    -------------------
+    dataset: str, name prefix of the dataset files
+    bin_path: str, path to binarized data folder used in model training
+    datafolder: str, path to folder containing the dataset
+
+    Keyword Parameters
+    ------------------
+    cid: str (default 'cid'), name of the column used for conversation identifier
+    suffix: str (default ''), name suffix of the dataset files
+    refsuffix: str (default ''), name suffix of the reference files
+    ckptfolder: str (default 'checkpoints/'), path to the model checkpoint folder
+    ckpt_file: str (default: None), if provided, uses only specified model checkpoint instead of iterating over all model checkpoints in <ckptfolder>
+    calculate_rouge: bool (default: True), whether to calculate rouge scores
+    calculation_type: str (default: 'old'), deprecated, no need to change
+    **kwargs: additional keyword parameters supported by inference_cached() API
+
+    Return
+    ------
+    best_ckpt: str, the file name of the best performing model checkpoint
+    """
     assert(calculation_type in ['old', 'new'])
     # run batch inference using checkpoints in ckptfolder, checkpoint file must be in the format "checkpoint[0-9]+.pt"
     rougescorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rouge3', 'rougeL'], use_stemmer=False)
@@ -79,7 +148,6 @@ def batch_inference(dataset, bin_path, datafolder,
     r1f_old = 0
     r2f_old = 0
     rlf_old = 0
-    r1r_old = 0
     best_ckpt = ''
     
     if ckpt_file is None:
@@ -148,60 +216,6 @@ def batch_inference(dataset, bin_path, datafolder,
         print('Best checkpoint: {}'.format(best_ckpt))
     
     return best_ckpt
-            
-
-def inference_cached(bart, source_file, batch_size=24, max_len=512, nbeam=4):
-    bart.eval()
-    count = 1
-    cache = {}
-    with open(source_file) as source:
-        lines = source.read().strip().split('\n')
-        for i in tqdm(range(0, len(lines), batch_size)):
-            slines = []
-            for j in range(i, min(i+batch_size, len(lines))):
-                if lines[j] not in cache:
-                    slines.append(lines[j])
-            if len(slines) > 0:
-                with torch.no_grad():
-                    hypotheses_batch = bart.sample(slines, beam=nbeam, lenpen=2.0, max_len_b=max_len, min_len=5, no_repeat_ngram_size=3)
-                    for (src, hypo) in zip(slines, hypotheses_batch):
-                        cache[src] = hypo
-    hypotheses = [cache[x] for x in lines] 
-    return hypotheses
-
-
-def inference(bart, source_file, batch_size=24, max_len=512, nbeam=4):
-    bart.eval()
-    count = 1
-    hypotheses = []
-    with open(source_file) as source:
-        s1 = source.readlines()
-        slines = [s1[0].strip()]
-
-        for i in tqdm(range(1, len(s1))):
-            if count % batch_size == 0:
-                with torch.no_grad():
-                    hypotheses_batch = bart.sample(slines, beam=nbeam, lenpen=0.2, max_len_b=max_len, min_len=1, no_repeat_ngram_size=3)
-                    hypotheses.extend(hypotheses_batch)
-                slines = []
-
-            slines.append(s1[i].strip())
-
-            count += 1
-
-        if slines != []:
-            with torch.no_grad():
-                hypotheses_batch = bart.sample(slines, beam=nbeam, lenpen=0.2, max_len_b=max_len, min_len=1, no_repeat_ngram_size=3)
-                hypotheses.extend(hypotheses_batch)
-    return hypotheses
-            
-    
-def validate_checkpoint_filename(s):
-    status = True
-    status = status and s.endswith('.pt')
-    status = status and s.startswith('checkpoint')
-    status = status and s.replace('checkpoint', '').replace('.pt', '').replace('_', '').isdigit()
-    return status
 
 
 if __name__ == '__main__':

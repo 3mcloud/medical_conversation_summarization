@@ -7,7 +7,7 @@ pd.set_option("display.precision", 4)
 import rouge
 SCORER = rouge.Rouge()
 from rouge_score import rouge_scorer
-RSCORER = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rouge3', 'rougeL'], use_stemmer=False)
+RSCORER = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
 
 from collections import defaultdict, Counter
 from pandarallel import pandarallel
@@ -16,8 +16,9 @@ from quickumls import QuickUMLS  # uncomment if quickUMLS is installed
 from tqdm import tqdm
 
 
-#%% utilities
+#%% Helper Functions
 def config_UMLSmatcher(path):
+    """Create UMLS matcher."""
     overlapping_criteria = 'length'
     threshold = 0.8
     similarity_name = 'jaccard'
@@ -32,6 +33,7 @@ def config_UMLSmatcher(path):
 
 
 def create_dataframe_from_jsonline(filename, cid='cid'):
+    """Create pandas.DataFrame object from .jsonl files."""
     dfval = []
     with jsonlines.open(filename, mode='r') as reader:
         for j in reader:
@@ -42,8 +44,7 @@ def create_dataframe_from_jsonline(filename, cid='cid'):
 
 
 def get_scores(hyps, refs, avg=False):
-    # calculate rouge scores given a list of hypotheses and references, modify this function
-    # if using different rouge packages
+    """Calculate rouge scores given a list of hypotheses and references. Modify this function but keep the function signature, if using different ROUGE package."""
     scores = defaultdict(list)
     for (h, r) in zip(hyps, refs):
         s = RSCORER.score(r, h)
@@ -60,12 +61,14 @@ def get_scores(hyps, refs, avg=False):
     
 
 def calculate_rouge(df, **kwds):
+    """Wrapper function for calculating rouge scores on pandas.DataFrame object."""
     df['scores'] = df[['summary', 'hypo']].parallel_apply(apply_rouge_scores, axis=1, **kwds)
     scores = pd.DataFrame(df['scores'].tolist()).mean()
     return df, scores
 
 
 def calculate_rouge_refs(df, **kwds):
+    """Wrapper function for calculation rouge scores among references."""
     def apply_fn(refs):
         scores = []
         for i in range(len(refs)):
@@ -82,6 +85,7 @@ def calculate_rouge_refs(df, **kwds):
 
 
 def apply_rouge_scores(value, return_type='mean', on='rouge1_f'):
+    """'apply' type of function to be used in pandas.DataFrame.apply() method for calculating rouge scores."""
     assert(return_type in ['best', 'mean', 'worst'])
     refs = value['summary']
     hypos = [value['hypo']]*len(refs)
@@ -96,6 +100,7 @@ def apply_rouge_scores(value, return_type='mean', on='rouge1_f'):
 
 
 def apply_extract_umls_concepts(value, umlsmatcher, return_type='dict'):
+    """'apply' type of function to be used in pandas.DataFrame.apply() method for calculating quickUMLS concept metrics."""
     concepts = umlsmatcher.match(value)
     cuis = defaultdict(list)
     for item in concepts:
@@ -108,6 +113,7 @@ def apply_extract_umls_concepts(value, umlsmatcher, return_type='dict'):
     
 
 def agg_merge_umls_concept(value, majority=None):
+    """'agg' type of function to be used in pandas.DataFrame.agg() method for calculating quickUMLS concept metrics."""
     cui_cnts = Counter()
     for x in value:
         cui_cnts.update(x.keys())
@@ -124,17 +130,8 @@ def agg_merge_umls_concept(value, majority=None):
     return out
 
 
-def calculate_F1(mat, eps=1e-10):
-    # matrix must be of shape (n, 3), three columns are TP, FP, and FN respectively
-    cnts = np.vstack(mat).sum(axis=0)
-    P = cnts[0]/(cnts[0]+cnts[1]+eps)
-    R = cnts[0]/(cnts[0]+cnts[2]+eps)
-    F1 = 2*P*R/(P+R+eps)
-    return [F1, P, R]
-
-
 def apply_naive_evaluation(value, refkey='umls', hypokey='umls_hypo', eps=1e-6):
-    # calculate precision, recall, f1 scores
+    """Helper function used in quickUMLS concept-based evaluation."""
     refs = value[refkey]
     hypos = value[hypokey]
     intersects = refs.intersection(hypos)
@@ -145,6 +142,21 @@ def apply_naive_evaluation(value, refkey='umls', hypokey='umls_hypo', eps=1e-6):
 
 
 def normalize_input_files(hypo_files, meta_files, concept_folders=None):
+    """Normalize the format of hypothesis (generated summaries) files for evaluation.
+    
+    Required parameters
+    -------------------
+    hypo_files: str or list[str], a single hypothesis (generated summaries) file or a list of hypothesis files.
+    meta_files: str or list[str], a single .meta file or a list of .meta files associated with <hypo_files>.
+
+    Keyword parameters
+    ------------------
+    concept_folders: str or list[str] (default None), optional parameter specifying path to folders containing concepts extracted from summaries, based on in-house NLP engine.
+
+    Returns
+    -------
+    A zipped object containing paired (hypo, meta) file paths or paired (hypo, meta, concept_folder) file paths.
+    """
     if type(hypo_files) is str:
         hypo_files = [hypo_files, ]
     if type(meta_files) is str:
@@ -168,6 +180,7 @@ def normalize_input_files(hypo_files, meta_files, concept_folders=None):
 
 
 def normalize_ref_files(ref_file, cid='cid', uid='utterances'):
+    """Normalizing the format of reference data files for evaluation."""
     if ref_file.endswith('.jsonl'):
         dfval = create_dataframe_from_jsonline(ref_file)
     elif ref_file.endswith('.target'):
@@ -192,6 +205,7 @@ def normalize_ref_files(ref_file, cid='cid', uid='utterances'):
 
 
 def read_meta_file(meta_file, hypo_file, cid='cid'):
+    """Load data from individual hypothesis file as pandas.DataFrame object."""
     if meta_file.endswith('.jsonl'):
         df = create_dataframe_from_jsonline(meta_file)
     elif meta_file.endswith('.meta'):
@@ -205,11 +219,24 @@ def read_meta_file(meta_file, hypo_file, cid='cid'):
 
 
 #%% Main APIs
-def eval_ref(json_file,  cid='cid', process_fn=None):
+def eval_ref(jsonl_file,  cid='cid', process_fn=None, **kwds):
+    """Evaluate mean-of-mean and mean-of-best rouge scores among reference summaries.
+
+    Required parameters
+    -------------------
+    jsonl_file: str, path to reference .jsonl file.
+
+    Keyword parameters
+    ------------------
+    cid : str (default 'cid'), name of the column for conversation identifier.
+    process_fn : function (default None), additional preprocessing function that takes in and returns a pandas.DataFrame object.
+    **kwds : dict, additional keyword parameters supported by process_fn().
+
+    Returns
+    -------
+    (mean-of-mean, mean-of-best) rouge scores.
     """
-    evaluate ROUGE score among references
-    """
-    dfref = create_dataframe_from_jsonline(json_file, cid=cid)
+    dfref = create_dataframe_from_jsonline(jsonl_file, cid=cid)
     dfscore = dfref[[cid, 'summary']].groupby(cid).agg(lambda x: x.to_list()).reset_index()
     if process_fn is not None:
         dfscore['summary'] = dfscore['summary'].parallel_apply(process_fn)
@@ -235,6 +262,26 @@ def eval_ref(json_file,  cid='cid', process_fn=None):
 
     
 def eval_rouge(hypo_files, meta_files, ref_file, cid='cid', process_fn=None, remove_duplicate=False):
+    """Evaluate mean-of-mean and mean-of-best rouge scores for generated summaries.
+
+    Required parameters
+    -------------------
+    hypo_files: str or list[str], a single .hypo file or a list of .hypo files, each containing generated summaries.
+    meta_files: str or list[str], a single .meta file or a list of .meta files, each containing meta file for the corresponding .hypo file in <hypo_file>.
+    ref_file: str, path to .jsonl file containing reference summaries.
+
+    Keyword parameters
+    ------------------
+    cid : str (default 'cid'), name of the column for conversation identifier.
+    remove_duplicate: bool (default False), whether to remove duplicated generated summaries from evaluation. Set this to True if the .hypo file contains multiple copies of generated summaries for the same conversation.
+    process_fn : function (default None), additional preprocessing function that takes in and returns a pandas.DataFrame object.
+    **kwds : dict, additional keyword parameters supported by process_fn().
+
+    Returns
+    -------
+    A three-tuple: (dfout, mean-of-mean, mean-of-best), containing the processed pandas.DataFrame object (text and rouge scores) of the last .hypo file in the input, a list of mean-of-mean rouge scores,
+    and a list of mean-of-best rouge scores. The size of the list matches the number of input .hypo files.
+    """
     files = normalize_input_files(hypo_files, meta_files)
         
     dfval = normalize_ref_files(ref_file)
@@ -267,6 +314,27 @@ def eval_rouge(hypo_files, meta_files, ref_file, cid='cid', process_fn=None, rem
 
 
 def eval_umls(hypo_files, meta_files, ref_file, matcher, majority=3, cid='cid', sid='sid', remove_duplicate=False):
+    """Evaluate quickUMLS concept-based evaluation for generated summaries.
+
+    Required parameters
+    -------------------
+    hypo_files: str or list[str], a single .hypo file or a list of .hypo files, each containing generated summaries.
+    meta_files: str or list[str], a single .meta file or a list of .meta files, each containing meta file for the corresponding .hypo file in <hypo_file>.
+    ref_file: str, path to .jsonl file containing reference summaries.
+    matcher: object, quickUMLS matcher object, can be set by config_UMLSmatcher().
+
+    Keyword parameters
+    ------------------
+    cid: str (default 'cid'), name of the column for conversation identifier (unique for each conversation).
+    sid: str (default 'sid'), name of the column for summary identifier (unique for each reference summary).
+    remove_duplicate: bool (default False), whether to remove duplicated generated summaries from evaluation. Set this to True if the .hypo file contains multiple copies of generated summaries for the same conversation.
+    majority: int (default 3), threshold for majority voting of extracted concepts from reference summaries. Only concepts that appear more than min(majority, # of references) times among all references are kept as gold concepts.
+
+    Returns
+    -------
+    A tuple: (df, metrics), containing the processed pandas.DataFrame object (text and umls scores) of the last .hypo file in the input, and a list of UMLS metrics evaluated on individual conversations; the size of the list is equal
+    to the number of input .hypo files. Use np.mean(metrics[i], axis=1) to get the mean scores for the ith .hypo file.
+    """
     files = normalize_input_files(hypo_files, meta_files)
         
     # get reference concepts
