@@ -84,7 +84,7 @@ rouge-score==0.0.4
 sacrebleu==2.0.0
 sacremoses==0.0.47
 scikit-learn==1.0.2
-scipy==1.7.3
+scipy==1.10.0
 Send2Trash==1.8.0
 sentence-transformers==2.1.0
 sentencepiece==0.1.96
